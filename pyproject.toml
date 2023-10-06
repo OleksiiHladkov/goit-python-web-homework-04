@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "webhw04"
+version = "0.1.0"
+description = ""
+authors = ["OleksiiHladkov <131037122+OleksiiHladkov@users.noreply.github.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+[tool.poetry.scripts]
+webhw04 = "webhw04:run"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -17,6 +17,12 @@ def output_logging_message(ip: str, message: str):
     logging.debug(f"{ip} - - [{date_now}] {message}")
 
 
+def get_connection_settings(server: str) -> tuple:
+    with open(resource_filename("webhw04", "./settings/connection.json"), "r") as fh:
+        settings = json.load(fh)
+        return settings.get(server).get("address"), settings.get(server).get("port")
+
+
 class HttpHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         pr_url = parse.urlparse(self.path)
@@ -24,12 +30,11 @@ class HttpHandler(BaseHTTPRequestHandler):
             self.send_html_file("index.html")
         elif pr_url.path == "/message":
             self.send_html_file("message.html")
+        elif pr_url.path == "/shutdown":
+            self.send_data(b"")
+            self.server.running = False
         else:
-            if (
-                pathlib.Path()
-                .joinpath(resource_filename("webhw04", pr_url.path[1:]))
-                .exists()
-            ):
+            if pathlib.Path().joinpath(resource_filename("webhw04", pr_url.path[1:])).exists():
                 self.send_static()
             else:
                 self.send_html_file("error.html", 404)
@@ -63,76 +68,78 @@ class HttpHandler(BaseHTTPRequestHandler):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             server_address = get_connection_settings("socket_server")
             sock.sendto(data, server_address)
-            output_logging_message(
-                server_address[0], f"Send data: {data} to {server_address}"
-            )
+            if data:
+                output_logging_message(server_address[0], f"Send data: {data} to {server_address}")
 
 
-def get_connection_settings(server: str) -> tuple:
-    with open(resource_filename("webhw04", "./settings/connection.json"), "r") as fh:
-        settings = json.load(fh)
-        return settings.get(server).get("address"), settings.get(server).get("port")
+class MainServer:
+    def __init__(self) -> None:
+        self._server_address = get_connection_settings("http_server")
+        self._server = HTTPServer(self._server_address, HttpHandler)
+        self._thread = threading.Thread(target=self.run)
+
+    def run(self) -> None:
+        self._server.running = True
+        while self._server.running:
+            self._server.handle_request()
+        output_logging_message(self._server_address[0], f"HTTP server stoped by handler {self._server_address}")
+
+    def start(self) -> None:
+        self._thread.start()
 
 
-def run_http_server(server_class=HTTPServer, handler_class=HttpHandler):
-    server_address = get_connection_settings("http_server")
-    http = server_class(server_address, handler_class)
-    try:
-        http.serve_forever()
-    except KeyboardInterrupt:
-        http.server_close()
+class MinorServer:
+    def __init__(self) -> None:
+        self._server_address = get_connection_settings("socket_server")
+        self._thread = threading.Thread(target=self.run)
 
+    def run(self) -> None:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.bind(self._server_address)
+            while True:
+                data, address = sock.recvfrom(1024)
+                if not data:
+                    output_logging_message(self._server_address[0], f"Socket server stoped by handler {address}")
+                    break
+                output_logging_message(self._server_address[0], f"Receive data: {data} from {address}")
+                self.write_data_to_json(data, self._server_address[0])
 
-def write_data_to_json(data: bytes, ip: str):
-    data_parse = parse.unquote_plus(data.decode())
-    data_dict = {
-        key: value for key, value in [el.split("=") for el in data_parse.split("&")]
-    }
-    storage_path = "./storage/data.json"
+    def start(self) -> None:
+        self._thread.start()
 
-    result_dict = dict()
+    def write_data_to_json(self, data: bytes, ip: str) -> None:
+        data_parse = parse.unquote_plus(data.decode())
+        data_dict = {
+            key: value for key, value in [el.split("=") for el in data_parse.split("&")]
+        }
+        storage_path = "./storage/data.json"
 
-    if (
-        pathlib.Path(resource_filename("webhw04", storage_path)).exists()
-        and os.stat(resource_filename("webhw04", storage_path)).st_size
-    ):
-        with open(resource_filename("webhw04", storage_path), "r") as fh:
-            result_dict = json.load(fh)
+        result_dict = dict()
 
-    date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-    result_dict[date_str] = data_dict
+        if (
+            pathlib.Path(resource_filename("webhw04", storage_path)).exists()
+            and os.stat(resource_filename("webhw04", storage_path)).st_size
+        ):
+            with open(resource_filename("webhw04", storage_path), "r") as fh:
+                result_dict = json.load(fh)
 
-    with open(resource_filename("webhw04", storage_path), "w") as fh:
-        json.dump(result_dict, fh)
-        output_logging_message(ip, f"Write data to file: {storage_path}")
+        date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        result_dict[date_str] = data_dict
 
-
-def run_socket_server():
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        server_address = get_connection_settings("socket_server")
-        sock.bind(server_address)
-        while True:
-            data, address = sock.recvfrom(1024)
-            output_logging_message(
-                server_address[0], f"Receive data: {data} from {address}"
-            )
-            write_data_to_json(data, server_address[0])
+        with open(resource_filename("webhw04", storage_path), "w") as fh:
+            json.dump(result_dict, fh)
+            output_logging_message(ip, f"Write data to file: {storage_path}")
 
 
 def run():
     logging.basicConfig(level=logging.DEBUG, format="%(message)s")
-
-    http = threading.Thread(target=run_http_server, daemon=True)
-    serv = threading.Thread(target=run_socket_server, daemon=True)
+    
+    http = MainServer()
+    serv = MinorServer()
 
     serv.start()
     http.start()
 
-    try:
-        while True:
-            sleep(5)
-    except KeyboardInterrupt:
-        output_logging_message("none", "Programm finished by user")
 
 
 if __name__ == "__main__":

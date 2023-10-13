@@ -1,8 +1,3 @@
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib import parse
-from time import sleep
-from datetime import datetime
-from pkg_resources import resource_filename
 import mimetypes
 import pathlib
 import threading
@@ -10,17 +5,38 @@ import socket
 import json
 import logging
 import os
+import requests
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib import parse
+from time import sleep
+from datetime import datetime
+from pkg_resources import resource_filename
 
 
-def output_logging_message(ip: str, message: str):
+logger = logging.getLogger('simple_example')
+logger.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+formatter = logging.Formatter("%(message)s")
+ch.setFormatter(formatter)
+logger.addHandler(ch)    
+
+
+def output_logging_message(message: str, ip: str = ""):
     date_now = datetime.now().strftime("%d/%b/%Y %H:%M:%S")
-    logging.debug(f"{ip} - - [{date_now}] {message}")
+    if ip:
+        logger.debug(f"{ip} - - [{date_now}] {message}")
+    else:
+        logger.debug(f"[{date_now}] {message}")
 
 
-def get_connection_settings(server: str) -> tuple:
+def get_connection_settings(server: str, get_alias: bool = False) -> tuple:
     with open(resource_filename("webhw04", "./settings/connection.json"), "r") as fh:
         settings = json.load(fh)
-        return settings.get(server).get("address"), settings.get(server).get("port")
+        if get_alias:
+            return settings.get(server).get("address"), settings.get(server).get("port"), settings.get(server).get("alias")
+        else:
+            return settings.get(server).get("address"), settings.get(server).get("port")
 
 
 class HttpHandler(BaseHTTPRequestHandler):
@@ -69,7 +85,7 @@ class HttpHandler(BaseHTTPRequestHandler):
             server_address = get_connection_settings("socket_server")
             sock.sendto(data, server_address)
             if data:
-                output_logging_message(server_address[0], f"Send data: {data} to {server_address}")
+                output_logging_message(f"Send data: {data} to {server_address}", server_address[0])
 
 
 class MainServer:
@@ -82,7 +98,7 @@ class MainServer:
         self._server.running = True
         while self._server.running:
             self._server.handle_request()
-        output_logging_message(self._server_address[0], f"HTTP server stoped by handler {self._server_address}")
+        output_logging_message(f"HTTP server stoped by handler")
 
     def start(self) -> None:
         self._thread.start()
@@ -99,9 +115,9 @@ class MinorServer:
             while True:
                 data, address = sock.recvfrom(1024)
                 if not data:
-                    output_logging_message(self._server_address[0], f"Socket server stoped by handler {address}")
+                    output_logging_message(f"Socket server stoped by handler")
                     break
-                output_logging_message(self._server_address[0], f"Receive data: {data} from {address}")
+                output_logging_message(f"Receive data: {data} from {address}", self._server_address[0])
                 self.write_data_to_json(data, self._server_address[0])
 
     def start(self) -> None:
@@ -128,17 +144,33 @@ class MinorServer:
 
         with open(resource_filename("webhw04", storage_path), "w") as fh:
             json.dump(result_dict, fh)
-            output_logging_message(ip, f"Write data to file: {storage_path}")
+            output_logging_message(f"Write data to file: {storage_path}", ip)
+
+
+def send_shutdown_request():
+    settings = get_connection_settings("http_server", True)
+    try:
+        requests.get(f"http://{settings[2]}:{settings[1]}/shutdown")
+    except:
+        pass
 
 
 def run():
-    logging.basicConfig(level=logging.DEBUG, format="%(message)s")
+    logging.getLogger("http").setLevel(logging.DEBUG)
+    logging.getLogger("requests").setLevel(logging.WARNING)
     
     http = MainServer()
     serv = MinorServer()
 
     serv.start()
     http.start()
+
+    try:
+        while True:
+            sleep(1)
+    except KeyboardInterrupt:
+        output_logging_message("Programm finished by admin")
+        send_shutdown_request()
 
 
 

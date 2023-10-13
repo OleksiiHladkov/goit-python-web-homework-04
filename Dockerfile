@@ -12,7 +12,7 @@ WORKDIR $APP_HOME
 COPY . .
 
 # Встановимо залежності всередині контейнера
-# RUN pip install -r requirements.txt
+RUN pip install -r requirements.txt
 
 # Позначимо порт, де працює застосунок всередині контейнера
 EXPOSE 3000
